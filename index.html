@@ -1,0 +1,819 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="screen-orientation" content="portrait">
+    <title>Game - Minimalist FPS</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: Arial, sans-serif;
+            touch-action: none;
+        }
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #controls {
+            position: fixed;
+            bottom: 10px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            pointer-events: none;
+        }
+        .joystick, .button {
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            background: rgba(0, 0, 0, 0.2);
+            pointer-events: auto;
+            user-select: none;
+        }
+        .joystick {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            position: relative;
+            margin-left: 10px;
+        }
+        .joystick-knob {
+            width: 30px;
+            height: 30px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            position: absolute;
+            top: 25px;
+            left: 25px;
+        }
+        .button {
+            width: 40px;
+            height: 40px;
+            margin-right: 10px;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.8);
+            border-radius: 5px;
+        }
+        #buttons {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+        @media (orientation: landscape) {
+            body::before {
+                content: 'Please rotate to portrait mode';
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                color: white;
+                font-size: 24px;
+                text-align: center;
+                z-index: 1000;
+            }
+            canvas, #controls {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="controls">
+        <div id="joystick" class="joystick">
+            <div id="joystick-knob" class="joystick-knob"></div>
+        </div>
+        <div id="buttons">
+            <div id="shoot" class="button">F</div>
+            <div id="switch-weapon" class="button">S</div>
+            <div id="flashlight" class="button">L</div>
+        </div>
+    </div>
+    <script>
+        // Telegram Mini App initialization
+        if (window.Telegram && window.Telegram.WebApp) {
+            Telegram.WebApp.expand();
+            Telegram.WebApp.setHeaderColor('#000000');
+            Telegram.WebApp.setBackgroundColor('#000000');
+        }
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const joystick = document.getElementById('joystick');
+        const joystickKnob = document.getElementById('joystick-knob');
+        const shootButton = document.getElementById('shoot');
+        const switchWeaponButton = document.getElementById('switch-weapon');
+        const flashlightButton = document.getElementById('flashlight');
+
+        // Set canvas size for portrait
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            if (window.innerWidth > window.innerHeight) {
+                canvas.width = window.innerHeight;
+                canvas.height = window.innerWidth;
+            }
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Lock portrait orientation (if supported)
+        if (screen.orientation && screen.orientation.lock) {
+            screen.orientation.lock('portrait').catch(e => console.log('Orientation lock failed:', e));
+        }
+
+        // Player properties
+        let player = {
+            x: 150,
+            y: 150,
+            angle: 0,
+            speed: 3,
+            health: 100,
+            ammo: 50,
+            weapon: 0, // 0: Pistol, 1: Shotgun, 2: Rifle, 3: Rocket Launcher
+            flashlightOn: false
+        };
+
+        // Weapons
+        const weapons = [
+            { name: 'Pistol', damage: 10, fireRate: 10, ammoCost: 1, bulletSpeed: 12 },
+            { name: 'Shotgun', damage: 20, fireRate: 20, ammoCost: 2, bulletSpeed: 10 },
+            { name: 'Rifle', damage: 15, fireRate: 5, ammoCost: 1, bulletSpeed: 15 },
+            { name: 'Rocket Launcher', damage: 50, fireRate: 30, ammoCost: 5, bulletSpeed: 8 }
+        ];
+        let fireCooldown = 0;
+
+        // Map: 0 = empty, 1 = wall
+        const map = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+            [1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1,0,0,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1],
+            [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,0,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1],
+            [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,0,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1],
+            [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,0,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1],
+            [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,0,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+        const tileSize = 80;
+
+        // NPCs
+        let npcs = [
+            { x: 300, y: 300, health: 50, alive: true },
+            { x: 400, y: 400, health: 50, alive: true },
+            { x: 500, y: 500, health: 50, alive: true }
+        ];
+
+        // Pickups
+        let pickups = [
+            { type: 'weapon', weaponId: 2, x: 400, y: 400, size: 30, color: 'green' }, // Rifle
+            { type: 'weapon', weaponId: 3, x: 800, y: 600, size: 40, color: 'purple' }, // Rocket Launcher
+            { type: 'ammo', amount: 20, x: 500, y: 700, size: 20, color: 'yellow' },
+            { type: 'ammo', amount: 10, x: 600, y: 200, size: 20, color: 'yellow' }
+        ];
+
+        // Bullets
+        let bullets = [];
+
+        // Blood effects
+        let bloodSplatters = [];
+        let bloodParticles = [];
+
+        // Mobile touch handling
+        let joystickTouchId = null;
+        let lookTouchId = null;
+        let joystickStartX = 0;
+        let joystickStartY = 0;
+        let lookStartX = 0;
+
+        joystick.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (joystickTouchId === null) {
+                joystickTouchId = e.changedTouches[0].identifier;
+                joystickStartX = e.changedTouches[0].clientX;
+                joystickStartY = e.changedTouches[0].clientY;
+                console.log('Joystick touch started:', joystickTouchId);
+            }
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            for (let touch of e.changedTouches) {
+                if (touch.target !== joystick && touch.target !== shootButton && touch.target !== switchWeaponButton && 
+                    touch.target !== flashlightButton && lookTouchId === null) {
+                    e.preventDefault();
+                    lookTouchId = touch.identifier;
+                    lookStartX = touch.clientX;
+                    console.log('Look touch started:', lookTouchId);
+                }
+            }
+        });
+
+        document.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            for (let touch of e.touches) {
+                if (touch.identifier === joystickTouchId) {
+                    let dx = touch.clientX - joystickStartX;
+                    let dy = touch.clientY - joystickStartY;
+                    let dist = Math.hypot(dx, dy);
+                    let maxDist = 25;
+                    if (dist > maxDist) {
+                        dx = (dx / dist) * maxDist;
+                        dy = (dy / dist) * maxDist;
+                    }
+                    joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+                    let forward = -dy / maxDist;
+                    let strafe = dx / maxDist;
+                    let newX = player.x + (Math.cos(player.angle) * forward + Math.cos(player.angle + Math.PI / 2) * strafe) * player.speed;
+                    let newY = player.y + (Math.sin(player.angle) * forward + Math.sin(player.angle + Math.PI / 2) * strafe) * player.speed;
+                    if (!checkCollision(newX, newY)) {
+                        player.x = newX;
+                        player.y = newY;
+                    }
+                    console.log('Joystick moved:', { dx, dy, forward, strafe });
+                } else if (touch.identifier === lookTouchId) {
+                    let dx = touch.clientX - lookStartX;
+                    player.angle += dx * 0.003; // Slightly faster for mobile
+                    lookStartX = touch.clientX;
+                    console.log('Look moved:', dx);
+                }
+            }
+        });
+
+        document.addEventListener('touchend', (e) => {
+            for (let touch of e.changedTouches) {
+                if (touch.identifier === joystickTouchId) {
+                    joystickTouchId = null;
+                    joystickKnob.style.transform = 'translate(0, 0)';
+                    console.log('Joystick touch ended');
+                } else if (touch.identifier === lookTouchId) {
+                    lookTouchId = null;
+                    console.log('Look touch ended');
+                }
+            }
+        });
+
+        // Mobile buttons
+        shootButton.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (player.ammo >= weapons[player.weapon].ammoCost && fireCooldown <= 0) {
+                shoot();
+                fireCooldown = weapons[player.weapon].fireRate;
+            }
+        });
+        switchWeaponButton.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            player.weapon = (player.weapon + 1) % weapons.length;
+        });
+        flashlightButton.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            player.flashlightOn = !player.flashlightOn;
+        });
+
+        function shoot() {
+            player.ammo -= weapons[player.weapon].ammoCost;
+            let barrelOffsetX = Math.cos(player.angle) * 40;
+            let barrelOffsetY = Math.sin(player.angle) * 40;
+            bullets.push({
+                x: player.x + barrelOffsetX,
+                y: player.y + barrelOffsetY,
+                angle: player.angle,
+                speed: weapons[player.weapon].bulletSpeed,
+                damage: weapons[player.weapon].damage
+            });
+        }
+
+        function checkCollision(x, y) {
+            const mapX = Math.floor(x / tileSize);
+            const mapY = Math.floor(y / tileSize);
+            if (mapX < 0 || mapX >= map[0].length || mapY < 0 || mapY >= map.length) return true;
+            return map[mapY][mapX] === 1;
+        }
+
+        function addBloodSplatter(x, y) {
+            const mapX = Math.floor(x / tileSize);
+            const mapY = Math.floor(y / tileSize);
+            let minDist = Infinity;
+            let splatter = null;
+            const offsets = [[0,-1], [0,1], [-1,0], [1,0]];
+            for (let [dx, dy] of offsets) {
+                let nx = mapX + dx;
+                let ny = mapY + dy;
+                if (nx >= 0 && nx < map[0].length && ny >= 0 && ny < map.length && map[ny][nx] === 1) {
+                    let wallX = (nx + 0.5) * tileSize;
+                    let wallY = (ny + 0.5) * tileSize;
+                    let dist = Math.hypot(x - wallX, y - wallY);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        splatter = { x: wallX, y: wallY, size: 20 + Math.random() * 10 };
+                    }
+                }
+            }
+            if (splatter) bloodSplatters.push(splatter);
+        }
+
+        function addBloodParticles(x, y) {
+            for (let i = 0; i < 5; i++) {
+                bloodParticles.push({
+                    x, y,
+                    vx: (Math.random() - 0.5) * 5,
+                    vy: (Math.random() - 0.5) * 5,
+                    size: 3 + Math.random() * 3,
+                    life: 20 + Math.random() * 10
+                });
+            }
+        }
+
+        function update() {
+            // Update NPCs
+            for (let npc of npcs) {
+                if (npc.alive) {
+                    let dx = player.x - npc.x;
+                    let dy = player.y - npc.y;
+                    let dist = Math.hypot(dx, dy);
+                    if (dist > 50) {
+                        let angle = Math.atan2(dy, dx);
+                        let newX = npc.x + Math.cos(angle) * 1;
+                        let newY = npc.y + Math.sin(angle) * 1;
+                        if (!checkCollision(newX, newY)) {
+                            npc.x = newX;
+                            npc.y = newY;
+                        }
+                    } else {
+                        player.health -= 0.1;
+                    }
+                    console.log('NPC Update:', { id: npcs.indexOf(npc), x: npc.x, y: npc.y, alive: npc.alive, dist });
+                }
+            }
+
+            // Log pickup positions
+            for (let p of pickups) {
+                console.log('Pickup Position:', { type: p.type, x: p.x, y: p.y });
+            }
+
+            // Update bullets
+            for (let b of bullets) {
+                b.x += Math.cos(b.angle) * b.speed;
+                b.y += Math.sin(b.angle) * b.speed;
+                for (let npc of npcs) {
+                    if (npc.alive && Math.hypot(b.x - npc.x, b.y - npc.y) < 20) {
+                        npc.health -= b.damage;
+                        addBloodSplatter(b.x, b.y);
+                        addBloodParticles(b.x, b.y);
+                        if (npc.health <= 0) npc.alive = false;
+                        b.remove = true;
+                    }
+                }
+            }
+            bullets = bullets.filter(b => !b.remove && !checkCollision(b.x, b.y) && b.x > 0 && b.x < map[0].length * tileSize && b.y > 0 && b.y < map.length * tileSize);
+
+            // Update blood particles
+            for (let p of bloodParticles) {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life--;
+            }
+            bloodParticles = bloodParticles.filter(p => p.life > 0 && !checkCollision(p.x, p.y));
+
+            // Check pickups
+            pickups = pickups.filter(p => {
+                let dist = Math.hypot(player.x - p.x, player.y - p.y);
+                if (dist < 30) {
+                    if (p.type === 'weapon') {
+                        player.weapon = p.weaponId;
+                    } else if (p.type === 'ammo') {
+                        player.ammo += p.amount;
+                    }
+                    return false;
+                }
+                return true;
+            });
+
+            // Update fire cooldown
+            if (fireCooldown > 0) fireCooldown--;
+        }
+
+        function drawWeapon() {
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height - canvas.height * 0.15);
+            if (player.weapon === 0) { // Pistol
+                ctx.fillStyle = '#444';
+                ctx.fillRect(-20, -40, 40, 30);
+                ctx.fillStyle = '#666';
+                ctx.fillRect(-12, -55, 24, 15);
+                ctx.fillStyle = '#222';
+                ctx.fillRect(-8, -35, 16, 8);
+            } else if (player.weapon === 1) { // Shotgun
+                ctx.fillStyle = '#3c2f2f';
+                ctx.fillRect(-28, -48, 56, 40);
+                ctx.fillStyle = '#555';
+                ctx.fillRect(-20, -72, 40, 24);
+                ctx.fillStyle = '#2a1f1f';
+                ctx.fillRect(-12, -44, 24, 12);
+            } else if (player.weapon === 2) { // Rifle
+                ctx.fillStyle = '#4a4a4a';
+                ctx.fillRect(-24, -44, 48, 36);
+                ctx.fillStyle = '#777';
+                ctx.fillRect(-16, -64, 32, 20);
+                ctx.fillStyle = '#333';
+                ctx.fillRect(-12, -40, 24, 10);
+            } else if (player.weapon === 3) { // Rocket Launcher
+                ctx.fillStyle = '#2f4f4f';
+                ctx.fillRect(-32, -56, 64, 48);
+                ctx.fillStyle = '#5f9ea0';
+                ctx.fillRect(-24, -80, 48, 24);
+                ctx.fillStyle = '#1c2526';
+                ctx.fillRect(-16, -52, 32, 12);
+            }
+            ctx.restore();
+        }
+
+        function drawHUD() {
+            // Health (bottom-left)
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.fillRect(10, canvas.height - 50, 80, 20);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`HP: ${Math.floor(player.health)}`, 15, canvas.height - 35);
+
+            // Ammo (bottom-right)
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.fillRect(canvas.width - 90, canvas.height - 50, 80, 20);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.textAlign = 'right';
+            ctx.fillText(`AMMO: ${player.ammo}`, canvas.width - 15, canvas.height - 35);
+
+            // Weapon (top-right)
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.fillRect(canvas.width - 90, 10, 80, 20);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.fillText(weapons[player.weapon].name.toUpperCase(), canvas.width - 15, 25);
+
+            // Game Over
+            if (player.health <= 0) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.font = '20px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+                ctx.font = '12px Arial';
+                ctx.fillText('TAP TO RESTART', canvas.width / 2, canvas.height / 2 + 30);
+            }
+        }
+
+        function draw() {
+            try {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw sky
+                ctx.fillStyle = '#1a1a3d';
+                ctx.fillRect(0, 0, canvas.width, canvas.height / 2);
+                let skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height / 2);
+                skyGradient.addColorStop(0, 'rgba(26, 26, 61, 0.8)');
+                skyGradient.addColorStop(1, 'rgba(75, 0, 130, 0.2)');
+                ctx.fillStyle = skyGradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height / 2);
+
+                // Draw floor
+                let floorGradient = ctx.createLinearGradient(0, canvas.height / 2, 0, canvas.height);
+                floorGradient.addColorStop(0, '#3c2f2f');
+                floorGradient.addColorStop(1, '#1c2526');
+                ctx.fillStyle = floorGradient;
+                ctx.fillRect(0, canvas.height / 2, canvas.width, canvas.height / 2);
+
+                // Raycasting for walls
+                const fov = Math.PI / 3;
+                const rays = Math.floor(canvas.width / 2);
+                const maxDist = 1000;
+                const projectionDist = (canvas.width / 2) / Math.tan(fov / 2);
+                const fogColor = { r: 100, g: 100, b: 100 };
+                const fogStart = 400;
+                const fogEnd = 800;
+                const lightPos = { x: player.x, y: player.y, range: player.flashlightOn ? 800 : 500 };
+                const flashlightAngle = player.flashlightOn ? Math.PI / 6 : Math.PI;
+
+                let wallDistances = new Array(canvas.width).fill(maxDist);
+                for (let i = 0; i < rays; i++) {
+                    let rayAngle = player.angle - fov / 2 + (fov * i / rays);
+                    let dist = 0;
+                    let hit = false;
+                    let rayX = player.x;
+                    let rayY = player.y;
+                    while (!hit && dist < maxDist) {
+                        dist += 0.5;
+                        rayX = player.x + Math.cos(rayAngle) * dist;
+                        rayY = player.y + Math.sin(rayAngle) * dist;
+                        if (checkCollision(rayX, rayY)) {
+                            hit = true;
+                            dist *= Math.cos(player.angle - rayAngle);
+                            let wallHeight = (canvas.height * tileSize) / dist;
+                            wallHeight = Math.min(wallHeight, canvas.height);
+
+                            // Light and flashlight
+                            let lightDist = Math.hypot(rayX - lightPos.x, rayY - lightPos.y);
+                            let shadowFactor = Math.max(0, 1 - lightDist / lightPos.range);
+                            if (player.flashlightOn) {
+                                let angleDiff = Math.abs(rayAngle - player.angle);
+                                if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+                                shadowFactor *= angleDiff < flashlightAngle / 2 ? 1 : 0.3;
+                            }
+                            shadowFactor = shadowFactor * 0.7 + 0.3;
+
+                            // Fog
+                            let fogFactor = dist < fogStart ? 0 : dist > fogEnd ? 1 : (dist - fogStart) / (fogEnd - fogStart);
+
+                            // Wall texture
+                            let textureOffset = Math.floor((rayX + rayY) % tileSize);
+                            let baseColor = textureOffset < tileSize / 2 ? { r: 100, g: 80, b: 60 } : { r: 80, g: 60, b: 40 };
+                            let r = baseColor.r * (1 - fogFactor) * shadowFactor + fogColor.r * fogFactor;
+                            let g = baseColor.g * (1 - fogFactor) * shadowFactor + fogColor.g * fogFactor;
+                            let b = baseColor.b * (1 - fogFactor) * shadowFactor + fogColor.b * fogFactor;
+
+                            // Draw wall strip
+                            let screenX = i * 2;
+                            wallDistances[screenX] = dist;
+                            wallDistances[screenX + 1] = dist;
+                            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                            ctx.fillRect(screenX, canvas.height / 2 - wallHeight / 2, 2, wallHeight);
+                        }
+                    }
+                    if (!hit) {
+                        let screenX = i * 2;
+                        wallDistances[screenX] = maxDist;
+                        wallDistances[screenX + 1] = maxDist;
+                    }
+                }
+
+                // Draw sprites
+                let sprites = [
+                    ...npcs.map(npc => ({
+                        type: 'npc',
+                        x: npc.x,
+                        y: npc.y,
+                        alive: npc.alive,
+                        dist: Math.hypot(npc.x - player.x, npc.y - player.y)
+                    })),
+                    ...pickups.map(p => ({
+                        type: p.type,
+                        x: p.x,
+                        y: p.y,
+                        size: p.size,
+                        color: p.color,
+                        dist: Math.hypot(p.x - player.x, p.y - player.y)
+                    })),
+                    ...bullets.map(b => ({
+                        type: 'bullet',
+                        x: b.x,
+                        y: b.y,
+                        dist: Math.hypot(b.x - player.x, b.y - player.y)
+                    })),
+                    ...bloodParticles.map(p => ({
+                        type: 'particle',
+                        x: p.x,
+                        y: p.y,
+                        size: p.size,
+                        life: p.life,
+                        dist: Math.hypot(p.x - player.x, p.y - player.y)
+                    }))
+                ];
+                sprites.sort((a, b) => b.dist - a.dist);
+
+                for (let sprite of sprites) {
+                    let dx = sprite.x - player.x;
+                    let dy = sprite.y - player.y;
+                    let dist = sprite.dist;
+                    if (dist >= maxDist || dist <= 0) continue;
+
+                    let angleToSprite = Math.atan2(dy, dx) - player.angle;
+                    if (angleToSprite > Math.PI) angleToSprite -= 2 * Math.PI;
+                    if (angleToSprite < -Math.PI) angleToSprite += 2 * Math.PI;
+                    if (Math.abs(angleToSprite) > fov / 1.5) continue;
+
+                    let screenX = canvas.width / 2 + (angleToSprite * projectionDist);
+                    let screenIdx = Math.floor(screenX);
+                    if (screenIdx < 0 || screenIdx >= canvas.width || dist > wallDistances[screenIdx] * 1.1) {
+                        console.log('Sprite Skipped:', { type: sprite.type, screenX, dist, wallDist: wallDistances[screenIdx] });
+                        continue;
+                    }
+
+                    // Light and flashlight
+                    let lightDist = Math.hypot(sprite.x - lightPos.x, sprite.y - lightPos.y);
+                    let shadowFactor = Math.max(0, 1 - lightDist / lightPos.range);
+                    if (player.flashlightOn) {
+                        let angleDiff = Math.abs(angleToSprite);
+                        if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+                        shadowFactor *= angleDiff < flashlightAngle / 2 ? 1 : 0.3;
+                    }
+                    shadowFactor = shadowFactor * 0.7 + 0.3;
+
+                    // Fog
+                    let fogFactor = dist < fogStart ? 0 : dist > fogEnd ? 1 : (dist - fogStart) / (fogEnd - fogStart);
+
+                    if (sprite.type === 'npc' && sprite.alive) {
+                        let size = (canvas.height * 30) / dist; // Smaller for portrait
+                        let r = 255 * (1 - fogFactor) * shadowFactor + fogColor.r * fogFactor;
+                        let g = 0 * (1 - fogFactor) * shadowFactor + fogColor.g * fogFactor;
+                        let b = 0 * (1 - fogFactor) * shadowFactor + fogColor.b * fogFactor;
+
+                        // Glow effect
+                        ctx.save();
+                        let gradient = ctx.createRadialGradient(screenX, canvas.height / 2, size / 8, screenX, canvas.height / 2, size);
+                        gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.8)`);
+                        gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+                        ctx.fillStyle = gradient;
+                        ctx.fillRect(screenX - size / 2, canvas.height / 2 - size * 1.5, size, size * 3);
+                        ctx.restore();
+
+                        // Core rectangle
+                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        ctx.fillRect(screenX - size / 4, canvas.height / 2 - size / 2, size / 2, size);
+                        console.log('NPC Rendered:', { x: sprite.x, y: sprite.y, screenX, dist, angleToSprite });
+                    } else if (sprite.type === 'weapon') {
+                        let size = (canvas.height * sprite.size) / dist;
+                        let baseColor = sprite.color === 'green' ? { r: 0, g: 255, b: 0 } : { r: 128, g: 0, b: 128 };
+                        let r = baseColor.r * (1 - fogFactor) * shadowFactor + fogColor.r * fogFactor;
+                        let g = baseColor.g * (1 - fogFactor) * shadowFactor + fogColor.g * fogFactor;
+                        let b = baseColor.b * (1 - fogFactor) * shadowFactor + fogColor.b * fogFactor;
+
+                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        ctx.fillRect(screenX - size / 2, canvas.height / 2 - size / 2, size, size);
+                        ctx.fillStyle = `rgba(255, 255, 255, 0.5)`;
+                        ctx.fillRect(screenX - size / 4, canvas.height / 2 + size / 2, size / 2, size / 4);
+                        console.log('Weapon Rendered:', { x: sprite.x, y: sprite.y, screenX, dist });
+                    } else if (sprite.type === 'ammo') {
+                        let size = (canvas.height * sprite.size) / dist;
+                        let baseColor = { r: 255, g: 255, b: 0 };
+                        let r = baseColor.r * (1 - fogFactor) * shadowFactor + fogColor.r * fogFactor;
+                        let g = baseColor.g * (1 - fogFactor) * shadowFactor + fogColor.g * fogFactor;
+                        let b = baseColor.b * (1 - fogFactor) * shadowFactor + fogColor.b * fogFactor;
+
+                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        ctx.fillRect(screenX - size / 2, canvas.height / 2 - size / 4, size / 2, size / 2);
+                        ctx.fillStyle = `rgba(0, 0, 0, 0.5)`;
+                        ctx.fillRect(screenX - size / 2, canvas.height / 2 - size / 20, size / 2, size / 10);
+                        ctx.fillRect(screenX - size / 4, canvas.height / 2 - size / 4, size / 10, size / 2);
+                        console.log('Ammo Rendered:', { x: sprite.x, y: sprite.y, screenX, dist });
+                    } else if (sprite.type === 'bullet') {
+                        let size = (canvas.height * 5) / dist;
+                        let r = 255 * (1 - fogFactor) * shadowFactor + fogColor.r * fogFactor;
+                        let g = 255 * (1 - fogFactor) * shadowFactor + fogColor.g * fogFactor;
+                        let b = 50 * (1 - fogFactor) * shadowFactor + fogColor.b * fogFactor;
+                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        ctx.fillRect(screenX - size / 2, canvas.height / 2 - size / 2, size, size / 2);
+                    } else if (sprite.type === 'particle') {
+                        let size = (canvas.height * sprite.size) / dist;
+                        let r = 139 * (1 - fogFactor) * shadowFactor + fogColor.r * fogFactor;
+                        let g = 0 * (1 - fogFactor) * shadowFactor + fogColor.g * fogFactor;
+                        let b = 0 * (1 - fogFactor) * shadowFactor + fogColor.b * fogFactor;
+                        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${sprite.life / 50})`;
+                        ctx.beginPath();
+                        ctx.arc(screenX, canvas.height / 2, size / 2, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+
+                // Draw blood splatters on walls
+                for (let splatter of bloodSplatters) {
+                    let dx = splatter.x - player.x;
+                    let dy = splatter.y - player.y;
+                    let splatterDist = Math.hypot(dx, dy);
+                    if (splatterDist < maxDist) {
+                        let angleToSplatter = Math.atan2(dy, dx) - player.angle;
+                        if (angleToSplatter > Math.PI) angleToSplatter -= 2 * Math.PI;
+                        if (angleToSplatter < -Math.PI) angleToSplatter += 2 * Math.PI;
+                        if (Math.abs(angleToSplatter) < fov / 2) {
+                            let screenX = canvas.width / 2 + (angleToSplatter * projectionDist);
+                            let screenIdx = Math.floor(screenX);
+                            if (screenIdx >= 0 && screenIdx < canvas.width && splatterDist < wallDistances[screenIdx]) {
+                                let splatterSize = (canvas.height * splatter.size) / splatterDist;
+                                let fogFactor = splatterDist < fogStart ? 0 : splatterDist > fogEnd ? 1 : (splatterDist - fogStart) / (fogEnd - fogStart);
+                                let r = 139 * (1 - fogFactor) + fogColor.r * fogFactor;
+                                let g = 0 * (1 - fogFactor) + fogColor.g * fogFactor;
+                                let b = 0 * (1 - fogFactor) + fogColor.b * fogFactor;
+                                ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.7)`;
+                                ctx.beginPath();
+                                ctx.arc(screenX, canvas.height / 2, splatterSize / 2, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
+                    }
+                }
+
+                // Draw weapon
+                drawWeapon();
+
+                // Draw HUD
+                drawHUD();
+            } catch (error) {
+                console.error('Draw Error:', error);
+            }
+        }
+
+        function gameLoop() {
+            try {
+                if (player.health <= 0) return;
+                update();
+                draw();
+                requestAnimationFrame(gameLoop);
+            } catch (error) {
+                console.error('Game Loop Error:', error);
+            }
+        }
+
+        // Restart on tap after game over
+        canvas.addEventListener('touchstart', (e) => {
+            if (player.health <= 0) {
+                e.preventDefault();
+                player = {
+                    x: 150,
+                    y: 150,
+                    angle: 0,
+                    speed: 3,
+                    health: 100,
+                    ammo: 50,
+                    weapon: 0,
+                    flashlightOn: false
+                };
+                npcs = [
+                    { x: 300, y: 300, health: 50, alive: true },
+                    { x: 400, y: 400, health: 50, alive: true },
+                    { x: 500, y: 500, health: 50, alive: true }
+                ];
+                pickups = [
+                    { type: 'weapon', weaponId: 2, x: 400, y: 400, size: 30, color: 'green' },
+                    { type: 'weapon', weaponId: 3, x: 800, y: 600, size: 40, color: 'purple' },
+                    { type: 'ammo', amount: 20, x: 500, y: 700, size: 20, color: 'yellow' },
+                    { type: 'ammo', amount: 10, x: 600, y: 200, size: 20, color: 'yellow' }
+                ];
+                bullets = [];
+                bloodSplatters = [];
+                bloodParticles = [];
+                fireCooldown = 0;
+                gameLoop();
+            }
+        });
+
+        // Start game
+        gameLoop();
+    </script>
+</body>
+</html>
